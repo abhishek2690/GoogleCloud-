@@ -1,0 +1,190 @@
+@@ -1,20 +1,35 @@
+timeout: 10800s
+steps:
+- # Compile Python interpreters from source
+- # Compile Python interpreters from source.  This step happens first, then
+  # the next three in parallel.
+  name: gcr.io/cloud-builders/docker:latest
+  args: ['build', '--tag=${_DOCKER_NAMESPACE}/python/interpreter-builder:${_TAG}',
+         '--no-cache', '/workspace/python-interpreter-builder/']
+- # Copy interpreters back to workspace
+  name: ${_DOCKER_NAMESPACE}/python/interpreter-builder:${_TAG}
+  args: ['cp', '/interpreters.tar.gz', '/workspace/runtime-image/interpreters.tar.gz']
+  id: interpreter-builder
+- name: ${_DOCKER_NAMESPACE}/python/interpreter-builder:${_TAG}
+  args: ['/scripts/build-python-3.4.sh']
+  id: build-3.4
+  waitFor: ['interpreter-builder']
+- name: ${_DOCKER_NAMESPACE}/python/interpreter-builder:${_TAG}
+  args: ['/scripts/build-python-3.5.sh']
+  id: build-3.5
+  waitFor: ['interpreter-builder']
+- name: ${_DOCKER_NAMESPACE}/python/interpreter-builder:${_TAG}
+  args: ['/scripts/build-python-3.6.sh']
+  id: build-3.6
+  waitFor: ['interpreter-builder']
+- # Build base runtime image
+  name: gcr.io/cloud-builders/docker:latest
+  args: ['build', '--tag=${_DOCKER_NAMESPACE}/python:${_TAG}',
+         '--no-cache', '/workspace/runtime-image/']
+  id: runtime
+  waitFor: ['build-3.4', 'build-3.5', 'build-3.6']
+- # Build runtime builder image
+  name: gcr.io/cloud-builders/docker:latest
+  args: ['build', '--tag=${_BUILDER_DOCKER_NAMESPACE}/python/gen-dockerfile:${_TAG}',
+         '--no-cache', '/workspace/builder/gen-dockerfile/']
+  id: gen-dockerfile
+  waitFor: ['runtime']
+images: [
+  '${_DOCKER_NAMESPACE}/python/interpreter-builder:${_TAG}',
+  '${_DOCKER_NAMESPACE}/python:${_TAG}',
+  
+51  cloudbuild_test.yaml
+@@ -5,18 +5,52 @@ steps:
+  args: [
+    '/bin/true',
+    ]
+  id: runtime
+ - # Validate structure of base runtime image
+  name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', '${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/virtualenv/virtualenv_default.yaml',
+    ]
+  waitFor: ['runtime']
+- name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', '${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/virtualenv/virtualenv_python27.yaml',
+    ]
+  waitFor: ['runtime']
+- name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', '${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/virtualenv/virtualenv_python34.yaml',
+    ]
+  waitFor: ['runtime']
+- name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', '${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/virtualenv/virtualenv_python35.yaml',
+    ]
+  waitFor: ['runtime']
+- name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', '${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/virtualenv/virtualenv_python36.yaml',
+    ]
+  waitFor: ['runtime']
+- name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', '${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/no-virtualenv/no-virtualenv.yaml',
+    ]
+  waitFor: ['runtime']
+ # Temporarily disabled because it fails on symbolic links in Ubuntu:
+#   https://github.com/GoogleCloudPlatform/container-structure-test/issues/77
+#- # Check license compliance
+@@ -26,35 +60,48 @@ steps:
+#    '-image', '${_DOCKER_NAMESPACE}/python:${_TAG}',
+#    '/workspace/tests/license-test/license-test.yaml'
+#    ]
+- # Do third-party library compatibility tests
+#  waitFor: ['runtime']
+ - # Do third-party library compatibility tests for Python 2
+  name: gcr.io/cloud-builders/docker:latest
+  args: [
+    'build', '-t', 'python2-libraries-intermediate', '--build-arg',
+    'intermediate_image=${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/python2-libraries'
+    ]
+  id: python2-libraries-intermediate
+  waitFor: ['runtime']
+- name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', 'python2-libraries-intermediate',
+    '/workspace/tests/python2-libraries/python2-libraries.yaml'
+    ]
+- name: gcr.io/cloud-builders/docker:latest
+  waitFor: ['python2-libraries-intermediate']
+ - # Do third-party library compatibility tests for Python 3
+  name: gcr.io/cloud-builders/docker:latest
+  args: [
+    'build', '-t', 'python3-libraries-intermediate', '--build-arg',
+    'intermediate_image=${_DOCKER_NAMESPACE}/python:${_TAG}',
+    '/workspace/tests/python3-libraries'
+    ]
+  id: python3-libraries-intermediate
+  waitFor: ['runtime']
+- name: gcr.io/gcp-runtimes/container-structure-test:v0.2.1
+  args: [
+    '-test.v',
+    '-image', 'python3-libraries-intermediate',
+    '/workspace/tests/python3-libraries/python3-libraries.yaml'
+    ]
+  waitFor: ['python3-libraries-intermediate']
+ - # Run other compatibility tests
+  name: gcr.io/cloud-builders/docker:latest
+  args: [
+    'build', '--tag=${_DOCKER_NAMESPACE}/python/tests/eventlet:${_TAG}',
+    '--no-cache', '/workspace/tests/eventlet/'
+    ]
+  waitFor: ['runtime']
+ images: []
+  
+14  python-interpreter-builder/Dockerfile.in
+@@ -46,17 +46,3 @@ ENV LANG C.UTF-8
+# Add build scripts
+ADD scripts /scripts
+ADD DEBIAN /DEBIAN
+ # Build the Python interpreters
+RUN mkdir -p /opt/packages && \
+    echo -n "" > /opt/packages/packages.txt
+ RUN /scripts/build-python-3.4.sh
+ RUN /scripts/build-python-3.5.sh
+ RUN /scripts/build-python-3.6.sh
+ # Tar the interpreters. Tarring is needed because docker cp doesn't handle
+# links correctly.
+RUN tar czf /interpreters.tar.gz /opt/python?.?
+  
+3  python-interpreter-builder/scripts/build-python-3.4.sh
+@@ -136,3 +136,6 @@ find "$PREFIX"/lib/python3.4/test \
+cd /opt
+rm /opt/sources/Python-3.4.8.tgz
+rm -r /opt/sources/Python-3.4.8
+ # Archive and copy to persistent external volume
+tar czf /workspace/runtime-image/interpreter-3.4.tar.gz /opt/python3.4
+  
+3  python-interpreter-builder/scripts/build-python-3.5.sh
+@@ -148,3 +148,6 @@ find "$PREFIX"/lib/python3.5/test \
+cd /opt
+rm /opt/sources/Python-3.5.5.tgz
+rm -r /opt/sources/Python-3.5.5
+ # Archive and copy to persistent external volume
+tar czf /workspace/runtime-image/interpreter-3.5.tar.gz /opt/python3.5
+  
+3  python-interpreter-builder/scripts/build-python-3.6.sh
+@@ -148,3 +148,6 @@ find "$PREFIX"/lib/python3.6/test \
+cd /opt
+rm /opt/sources/Python-3.6.4.tgz
+rm -r /opt/sources/Python-3.6.4
+ # Archive and copy to persistent external volume
+tar czf /workspace/runtime-image/interpreter-3.6.tar.gz /opt/python3.6
+  
+4  runtime-image/Dockerfile.in
+@@ -17,7 +17,9 @@ ENV LANG C.UTF-8
+ENV PYTHONUNBUFFERED 1
+ # Install the Google-built interpreters
+ADD interpreters.tar.gz /
+ADD interpreter-3.4.tar.gz /
+ADD interpreter-3.5.tar.gz /
+ADD interpreter-3.6.tar.gz /
+ # Add Google-built interpreters to the path
+ENV PATH /opt/python3.6/bin:/opt/python3.5/bin:/opt/python3.4/bin:$PATH
